@@ -2,6 +2,7 @@ import os
 from datetime import date, timedelta
 from flask import Flask, jsonify, request
 from flask_migrate import Migrate
+from sqlalchemy import text
 from models import db, DailySnapshot, Instrument, PortfolioHolding
 
 def create_app():
@@ -12,6 +13,14 @@ def create_app():
     
     db.init_app(app)
     Migrate(app, db)
+
+    # 確認資料庫連線
+    with app.app_context():
+        try:
+            db.session.execute(text('SELECT 1'))
+            print("Database connection successful!")
+        except Exception as e:
+            print(f"Database connection failed: {e}")
 
     @app.route('/api/portfolio/trade', methods=['POST'])
     def execute_trade():
@@ -172,7 +181,6 @@ def create_app():
         
     return app
 
-app = create_app()
-
 if __name__ == '__main__':
+    app = create_app()
     app.run(debug=True)

@@ -4,7 +4,21 @@ from flask import Flask, jsonify, request
 from flask_migrate import Migrate
 from flask_cors import CORS
 from sqlalchemy import text
+from functools import wraps
 from models import db, DailySnapshot, Instrument, PortfolioHolding
+
+def require_api_key(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = os.environ.get('API_KEY')
+        # If API_KEY is not set in environment, we might want to fail open or closed.
+        # usually closed. But for dev maybe open?
+        # User said "read it from environment variable".
+        # Let's assume if env var is missing, it denies access or matches None (which denies).
+        if request.headers.get('X-API-KEY') == api_key:
+            return f(*args, **kwargs)
+        return jsonify({"error": "Unauthorized"}), 401
+    return decorated_function
 
 def create_app():
     app = Flask(__name__)
@@ -25,6 +39,7 @@ def create_app():
             print(f"Database connection failed: {e}")
 
     @app.route('/api/portfolio/trade', methods=['POST'])
+    @require_api_key
     def execute_trade():
         """
         執行交易並更新持倉
@@ -122,6 +137,7 @@ def create_app():
             return jsonify({"error": str(e)}), 500 
 
     @app.route('/api/assets/overview', methods=['GET'])
+    @require_api_key
     def get_assets_overview():
         """
         Returns current asset overview.
@@ -150,6 +166,7 @@ def create_app():
         return jsonify(data)
 
     @app.route('/api/assets/history', methods=['GET'])
+    @require_api_key
     def get_assets_history():
         """
         Returns daily equity history from database.

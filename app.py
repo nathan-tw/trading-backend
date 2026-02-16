@@ -1,4 +1,6 @@
 import os
+import jwt
+import datetime
 from datetime import date, timedelta
 from flask import Flask, jsonify, request
 from flask_migrate import Migrate
@@ -7,18 +9,30 @@ from sqlalchemy import text
 from functools import wraps
 from models import db, DailySnapshot, Instrument, PortfolioHolding
 
-def require_api_key(f):
+def require_auth(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
+    def decorated(*args, **kwargs):
+        # Check for X-API-KEY
         api_key = os.environ.get('API_KEY')
-        # If API_KEY is not set in environment, we might want to fail open or closed.
-        # usually closed. But for dev maybe open?
-        # User said "read it from environment variable".
-        # Let's assume if env var is missing, it denies access or matches None (which denies).
         if request.headers.get('X-API-KEY') == api_key:
             return f(*args, **kwargs)
+        
+        # Check for JWT Token
+        token = None
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(" ")[1]
+        
+        if token:
+            try:
+                jwt.decode(token, os.environ.get('JWT_SECRET_KEY', 'fallback-secret-key'), algorithms=["HS256"])
+                return f(*args, **kwargs)
+            except:
+                pass
+                
         return jsonify({"error": "Unauthorized"}), 401
-    return decorated_function
+    return decorated
 
 def create_app():
     app = Flask(__name__)
@@ -26,6 +40,7 @@ def create_app():
     
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'fallback-secret-key')
     
     db.init_app(app)
     Migrate(app, db)
@@ -38,8 +53,95 @@ def create_app():
         except Exception as e:
             print(f"Database connection failed: {e}")
 
+    @app.route('/', methods=['GET'])
+    def index():
+        return jsonify({
+            "message": "Trading Room Backend API is running.",
+            "status": "success",
+            "frontend_port": 5173,
+            "backend_port": 5001
+        })
+
+    @app.route('/api/login', methods=['POST'])
+    def login():
+        auth = request.json
+        if not auth or not auth.get('username') or not auth.get('password'):
+            return jsonify({'message': 'Missing credentials'}), 400
+        
+        # Simple hardcoded check for demonstration
+        admin_user = os.environ.get('ADMIN_USERNAME', 'admin')
+        admin_pass = os.environ.get('ADMIN_PASSWORD', 'admin123')
+        
+        if auth.get('username') == admin_user and auth.get('password') == admin_pass:
+            token = jwt.encode({
+                'user': admin_user,
+                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+            }, app.config['JWT_SECRET_KEY'], algorithm="HS256")
+            
+            return jsonify({'token': token})
+        
+        return jsonify({'message': 'Invalid credentials'}), 401
+
+    @app.route('/api/admin/update-assets', methods=['POST'])
+    @require_auth
+    def update_assets():
+        """
+        Admin route to update or add assets.
+        Expects a list of assets: [{symbol, market, quantity, current_price}, ...]
+        """
+        data = request.json
+        if not isinstance(data, list):
+            return jsonify({"error": "Expected a list of assets"}), 400
+        
+        try:
+            processed_instrument_ids = []
+            
+            for item in data:
+                symbol = item.get('symbol')
+                market = item.get('market')
+                qty = float(item.get('quantity', 0))
+                price = float(item.get('current_price', 0))
+                
+                if not symbol or not market:
+                    continue
+                
+                instrument = Instrument.query.filter_by(symbol=symbol, market=market).first()
+                if not instrument:
+                    instrument = Instrument(symbol=symbol, market=market, name=symbol)
+                    db.session.add(instrument)
+                    db.session.flush()
+                
+                processed_instrument_ids.append(instrument.id)
+                
+                holding = PortfolioHolding.query.filter_by(instrument_id=instrument.id).first()
+                if holding:
+                    holding.quantity = qty
+                    holding.current_price = price
+                else:
+                    new_holding = PortfolioHolding(
+                        instrument_id=instrument.id,
+                        quantity=qty,
+                        average_cost=price,
+                        current_price=price
+                    )
+                    db.session.add(new_holding)
+            
+            # Remove any holdings that were NOT in the provided list
+            # This handles the "remove" functionality from the UI
+            if processed_instrument_ids:
+                PortfolioHolding.query.filter(~PortfolioHolding.instrument_id.in_(processed_instrument_ids)).delete(synchronize_session=False)
+            else:
+                # If the list is empty, remove all holdings
+                PortfolioHolding.query.delete()
+                
+            db.session.commit()
+            return jsonify({"message": "Assets updated successfully"})
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/portfolio/trade', methods=['POST'])
-    @require_api_key
+    @require_auth
     def execute_trade():
         """
         執行交易並更新持倉
@@ -137,7 +239,7 @@ def create_app():
             return jsonify({"error": str(e)}), 500 
 
     @app.route('/api/assets/overview', methods=['GET'])
-    @require_api_key
+    @require_auth
     def get_assets_overview():
         """
         Returns current asset overview.
@@ -166,7 +268,7 @@ def create_app():
         return jsonify(data)
 
     @app.route('/api/assets/history', methods=['GET'])
-    @require_api_key
+    @require_auth
     def get_assets_history():
         """
         Returns daily equity history from database.

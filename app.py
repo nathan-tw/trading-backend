@@ -1,5 +1,4 @@
 import os
-import jwt
 import datetime
 from datetime import date, timedelta
 from flask import Flask, jsonify, request
@@ -12,24 +11,10 @@ from models import db, DailySnapshot, Instrument, PortfolioHolding
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Check for X-API-KEY
+        # Only check for X-API-KEY
         api_key = os.environ.get('API_KEY')
         if request.headers.get('X-API-KEY') == api_key:
             return f(*args, **kwargs)
-        
-        # Check for JWT Token
-        token = None
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            if auth_header.startswith('Bearer '):
-                token = auth_header.split(" ")[1]
-        
-        if token:
-            try:
-                jwt.decode(token, os.environ.get('JWT_SECRET_KEY', 'fallback-secret-key'), algorithms=["HS256"])
-                return f(*args, **kwargs)
-            except:
-                pass
                 
         return jsonify({"error": "Unauthorized"}), 401
     return decorated
@@ -40,7 +25,6 @@ def create_app():
     
     app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///local.db')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'fallback-secret-key')
     
     db.init_app(app)
     Migrate(app, db)
@@ -61,26 +45,6 @@ def create_app():
             "frontend_port": 5173,
             "backend_port": 5001
         })
-
-    @app.route('/api/login', methods=['POST'])
-    def login():
-        auth = request.json
-        if not auth or not auth.get('username') or not auth.get('password'):
-            return jsonify({'message': 'Missing credentials'}), 400
-        
-        # Simple hardcoded check for demonstration
-        admin_user = os.environ.get('ADMIN_USERNAME', 'admin')
-        admin_pass = os.environ.get('ADMIN_PASSWORD', 'admin123')
-        
-        if auth.get('username') == admin_user and auth.get('password') == admin_pass:
-            token = jwt.encode({
-                'user': admin_user,
-                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-            }, app.config['JWT_SECRET_KEY'], algorithm="HS256")
-            
-            return jsonify({'token': token})
-        
-        return jsonify({'message': 'Invalid credentials'}), 401
 
     @app.route('/api/admin/update-assets', methods=['POST'])
     @require_auth
@@ -146,8 +110,8 @@ def create_app():
         """
         執行交易並更新持倉
         邏輯：
-        1. BUY: 增加數量，重新計算平均成本 (加權平均)。
-        2. SELL: 減少數量，平均成本不變 (只計算實現損益，但這裡先專注更新庫存)。
+        1. 紀錄 Transaction (不可變事件)
+        2. 更新 PortfolioHolding (當前狀態)
         """
         data = request.json
         
@@ -161,78 +125,84 @@ def create_app():
         side = data['side'].upper() # BUY / SELL
         trade_qty = float(data['quantity'])
         trade_price = float(data['price'])
+        reason = data.get('reason', '')
+        tags = data.get('tags', [])
 
         try:
+            from models import Transaction
+
             # 2. 查找或建立商品 (Instrument)
-            # 如果是第一次買這檔股票，系統自動建立 Instrument
             instrument = Instrument.query.filter_by(symbol=symbol, market=market).first()
             if not instrument:
                 if side == 'SELL':
                     return jsonify({"error": "Cannot sell an instrument you don't own"}), 400
                 
-                instrument = Instrument(symbol=symbol, market=market, name=symbol) # Name 暫時用 symbol 代替
+                instrument = Instrument(symbol=symbol, market=market, name=symbol)
                 db.session.add(instrument)
-                db.session.flush() # 為了拿到 instrument.id
+                db.session.flush()
 
-            # 3. 查找目前持倉 (Holding)
+            # 3. 建立交易紀錄 (Transaction - Source of Truth)
+            new_tx = Transaction(
+                instrument_id=instrument.id,
+                side=side,
+                quantity=trade_qty,
+                price=trade_price,
+                reason=reason,
+                tags=tags
+            )
+            db.session.add(new_tx)
+
+            # 4. 查找並更新目前持倉 (Holding - Calculated State)
             holding = PortfolioHolding.query.filter_by(instrument_id=instrument.id).first()
 
             if not holding:
-                # 如果沒有持倉
                 if side == 'SELL':
                     return jsonify({"error": "Position not found"}), 400
                 
-                # 建立新持倉
                 new_holding = PortfolioHolding(
                     instrument_id=instrument.id,
                     quantity=trade_qty,
                     average_cost=trade_price,
-                    current_price=trade_price # 假設現價等於成交價
+                    current_price=trade_price
                 )
                 db.session.add(new_holding)
                 holding = new_holding
                 msg = f"Opened new position: {symbol}"
-
             else:
-                # 已有持倉，進行更新
                 current_qty = float(holding.quantity)
                 current_avg_cost = float(holding.average_cost)
 
                 if side == 'BUY':
-                    # === 買進邏輯 (加權平均) ===
-                    # 新總成本 = (舊數量 * 舊均價) + (新數量 * 新買價)
                     total_cost = (current_qty * current_avg_cost) + (trade_qty * trade_price)
                     new_qty = current_qty + trade_qty
                     new_avg_cost = total_cost / new_qty
                     
                     holding.quantity = new_qty
                     holding.average_cost = new_avg_cost
-                    holding.current_price = trade_price # 更新現價
+                    holding.current_price = trade_price
                     msg = f"Added to position: {symbol}. New Cost: {new_avg_cost:.2f}"
-
                 elif side == 'SELL':
-                    # === 賣出邏輯 ===
                     if current_qty < trade_qty:
                         return jsonify({"error": "Not enough quantity to sell"}), 400
                     
                     new_qty = current_qty - trade_qty
-                    
                     if new_qty == 0:
-                        # 如果賣光了，可以選擇刪除持倉或保留數量為 0
                         db.session.delete(holding)
                         msg = f"Closed position: {symbol}"
                     else:
-                        # 賣出時，平均成本「不變」，只減少數量
                         holding.quantity = new_qty
                         holding.current_price = trade_price
                         msg = f"Reduced position: {symbol}"
 
-            # 4. 提交交易
             db.session.commit()
-            return jsonify({"message": msg, "current_holding": {
-                "symbol": symbol,
-                "quantity": float(holding.quantity) if holding else 0
-            }})
+            return jsonify({
+                "message": msg, 
+                "transaction_id": new_tx.id,
+                "current_holding": {
+                    "symbol": symbol,
+                    "quantity": float(holding.quantity) if holding else 0
+                }
+            })
 
         except Exception as e:
             db.session.rollback()
@@ -276,6 +246,32 @@ def create_app():
         except Exception as e:
             db.session.rollback()
             return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/transactions', methods=['GET'])
+    @require_auth
+    def get_transactions():
+        """
+        Returns all transaction records.
+        """
+        from models import Transaction
+        transactions = Transaction.query.order_by(Transaction.transaction_date.desc()).all()
+        
+        results = []
+        for tx in transactions:
+            instrument = tx.instrument
+            results.append({
+                "id": tx.id,
+                "symbol": instrument.symbol,
+                "market": instrument.market,
+                "side": tx.side,
+                "quantity": float(tx.quantity),
+                "price": float(tx.price),
+                "transaction_date": tx.transaction_date.isoformat(),
+                "reason": tx.reason,
+                "tags": tx.tags or []
+            })
+        
+        return jsonify(results)
 
     @app.route('/api/assets/overview', methods=['GET'])
     @require_auth

@@ -17,13 +17,14 @@ class Instrument(db.Model):
     type = db.Column(db.String(20))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # 設定唯一鍵 (對應 SQL: UNIQUE(symbol, market))
+    # 設定唯一鍵
     __table_args__ = (db.UniqueConstraint('symbol', 'market', name='uq_instrument'),)
     
-    # 建立關聯 (方便之後從 Instrument 查庫存)
+    # 建立關聯
     holding = db.relationship('PortfolioHolding', backref='instrument', uselist=False, cascade="all, delete-orphan")
+    transactions = db.relationship('Transaction', backref='instrument', lazy=True, order_by="Transaction.transaction_date.desc()")
 
-# 2. 持倉表 (PortfolioHoldings)
+# 2. 持倉表 (PortfolioHoldings) - 這是 Transaction 計算後的結果 (Read Model)
 class PortfolioHolding(db.Model):
     __tablename__ = 'portfolio_holdings'
 
@@ -35,7 +36,24 @@ class PortfolioHolding(db.Model):
     current_price = db.Column(db.Numeric(15, 4))
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-# 3. 每日快照表 (DailySnapshots)
+# 3. 交易紀錄表 (Transactions) - 真相來源 (Source of Truth)
+class Transaction(db.Model):
+    __tablename__ = 'transactions'
+
+    id = db.Column(db.Integer, primary_key=True)
+    instrument_id = db.Column(db.Integer, db.ForeignKey('instruments.id'), nullable=False)
+    
+    side = db.Column(db.String(10), nullable=False) # BUY, SELL
+    quantity = db.Column(db.Numeric(15, 4), nullable=False)
+    price = db.Column(db.Numeric(15, 4), nullable=False)
+    
+    transaction_date = db.Column(db.DateTime, default=datetime.utcnow)
+    reason = db.Column(db.Text) # 支援 Markdown 紀錄
+    tags = db.Column(JSON)     # 標籤陣列
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# 4. 每日快照表 (DailySnapshots)
 class DailySnapshot(db.Model):
     __tablename__ = 'daily_snapshots'
 

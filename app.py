@@ -238,6 +238,45 @@ def create_app():
             db.session.rollback()
             return jsonify({"error": str(e)}), 500 
 
+    @app.route('/api/snapshots/check', methods=['GET'])
+    @require_auth
+    def check_snapshot():
+        snapshot_date = request.args.get('date')
+        if not snapshot_date:
+            return jsonify({"error": "Date is required"}), 400
+        
+        snapshot = DailySnapshot.query.filter_by(snapshot_date=snapshot_date).first()
+        return jsonify({"exists": snapshot is not None})
+
+    @app.route('/api/snapshots', methods=['POST'])
+    @require_auth
+    def create_snapshot():
+        data = request.json
+        try:
+            # Check if exists to avoid double creation
+            snapshot_date = data.get('snapshot_date')
+            existing = DailySnapshot.query.filter_by(snapshot_date=snapshot_date).first()
+            
+            if existing:
+                return jsonify({"message": "Snapshot already exists"}), 409
+
+            snapshot = DailySnapshot(
+                snapshot_date=snapshot_date,
+                total_net_worth=data.get('total_net_worth'),
+                equity_us=data.get('equity_us', 0),
+                equity_tw=data.get('equity_tw', 0),
+                equity_futures=data.get('equity_futures', 0),
+                cash_balance=data.get('cash_balance', 0),
+                usd_twd_rate=data.get('usd_twd_rate'),
+                holdings_snapshot=data.get('holdings_snapshot')
+            )
+            db.session.add(snapshot)
+            db.session.commit()
+            return jsonify({"message": "Snapshot created successfully"}), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/assets/overview', methods=['GET'])
     @require_auth
     def get_assets_overview():

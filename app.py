@@ -247,6 +247,41 @@ def create_app():
             db.session.rollback()
             return jsonify({"error": str(e)}), 500
 
+    @app.route('/api/ticks/check', methods=['GET'])
+    @require_auth
+    def check_tick_data():
+        """
+        Check if tick data exists for a given date.
+        """
+        from models import TickData
+        trade_date = request.args.get('date')
+        if not trade_date:
+            return jsonify({"error": "Date is required"}), 400
+        
+        exists = TickData.query.filter_by(trade_date=trade_date).first() is not None
+        return jsonify({"exists": exists})
+
+    @app.route('/api/ticks/upload', methods=['POST'])
+    @require_auth
+    def upload_tick_data():
+        """
+        Bulk upload tick data.
+        """
+        from models import TickData
+        data = request.json
+        if not isinstance(data, list):
+            return jsonify({"error": "Expected a list of tick data"}), 400
+        
+        try:
+            # Using bulk_insert_mappings for better performance with large datasets
+            # The data objects in the list should match the column names in TickData
+            db.session.bulk_insert_mappings(TickData, data)
+            db.session.commit()
+            return jsonify({"message": f"Successfully uploaded {len(data)} ticks"}), 201
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": str(e)}), 500
+
     @app.route('/api/transactions', methods=['GET'])
     @require_auth
     def get_transactions():

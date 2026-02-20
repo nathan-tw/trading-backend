@@ -73,3 +73,22 @@ class DailySnapshot(db.Model):
     holdings_snapshot = db.Column(JSON)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# 5. 逐筆成交數據表 (TickData)
+class TickData(db.Model):
+    __tablename__ = 'tick_data'
+
+    id = db.Column(db.Integer, primary_key=True)
+    trade_date = db.Column(db.Date, nullable=False, index=True)
+    product_code = db.Column(db.String(20), nullable=False, index=True)
+    contract_month = db.Column(db.String(10), nullable=False, index=True)
+    trade_time = db.Column(db.String(10), nullable=False) # 格式為 HHMMSS
+    price = db.Column(db.Numeric(15, 4), nullable=False)
+    volume = db.Column(db.Integer, nullable=False)
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # 建立複合索引以加速查詢
+    __table_args__ = (
+        db.Index('idx_product_contract_date', 'product_code', 'contract_month', 'trade_date'),
+    )

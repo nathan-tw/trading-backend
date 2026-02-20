@@ -81,7 +81,7 @@ class TickData(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     trade_date = db.Column(db.Date, nullable=False, index=True)
     product_code = db.Column(db.String(20), nullable=False, index=True)
-    contract_month = db.Column(db.String(10), nullable=False, index=True)
+    contract_month = db.Column(db.String(20), nullable=False, index=True)
     trade_time = db.Column(db.String(10), nullable=False) # 格式為 HHMMSS
     price = db.Column(db.Numeric(15, 4), nullable=False)
     volume = db.Column(db.Integer, nullable=False)

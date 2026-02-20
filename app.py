@@ -274,12 +274,12 @@ def create_app():
         
         try:
             # Using bulk_insert_mappings for better performance with large datasets
-            # The data objects in the list should match the column names in TickData
             db.session.bulk_insert_mappings(TickData, data)
             db.session.commit()
             return jsonify({"message": f"Successfully uploaded {len(data)} ticks"}), 201
         except Exception as e:
             db.session.rollback()
+            print(f"Error during bulk insert: {e}") # This will show in docker logs
             return jsonify({"error": str(e)}), 500
 
     @app.route('/api/transactions', methods=['GET'])

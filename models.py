@@ -92,3 +92,26 @@ class TickData(db.Model):
     __table_args__ = (
         db.Index('idx_product_contract_date', 'product_code', 'contract_month', 'trade_date'),
     )
+
+# 6. K線資料表 (OhlcvData)
+class OhlcvData(db.Model):
+    __tablename__ = 'ohlcv_data'
+
+    id = db.Column(db.Integer, primary_key=True)
+    product_code = db.Column(db.String(20), nullable=False, index=True)
+    timeframe = db.Column(db.String(10), nullable=False, index=True) # e.g., '1min', '1D'
+    timestamp = db.Column(db.DateTime, nullable=False, index=True)
+    
+    open = db.Column(db.Numeric(15, 4), nullable=False)
+    high = db.Column(db.Numeric(15, 4), nullable=False)
+    low = db.Column(db.Numeric(15, 4), nullable=False)
+    close = db.Column(db.Numeric(15, 4), nullable=False)
+    volume = db.Column(db.Integer, nullable=False, default=0)
+    
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # 確保同一商品、同一時間週期、同一時間點只有一筆資料
+    __table_args__ = (
+        db.UniqueConstraint('product_code', 'timeframe', 'timestamp', name='uq_ohlcv'),
+        db.Index('idx_ohlcv_query', 'product_code', 'timeframe', 'timestamp'),
+    )

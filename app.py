@@ -352,44 +352,78 @@ def create_app():
     @app.route('/api/backtest', methods=['POST'])
     def run_backtest_api():
         """
-        Run a backtest using a specified strategy.
-        Accepts: {"strategy": "SmaCross", "product_code": "TX", "timeframe": "1min", "start_date": "2023-01-01", "end_date": "2023-12-31", "params": {...}}
+        Run a backtest using a specified strategy from backend/engine.
+        Accepts: 
+        {
+          "strategy": "combined_ma_breakout", 
+          "cash": 100000,
+          "mult": 10,
+          "commission": 15,
+          "slippage": 2
+        }
         """
         data = request.json
         if not data:
             return jsonify({"error": "No JSON payload provided"}), 400
 
-        strategy_name = data.get('strategy')
-        product_code = data.get('product_code', 'TX')
-        timeframe = data.get('timeframe', '1min')
-        start_date = data.get('start_date')
-        end_date = data.get('end_date')
-        strategy_params = data.get('params', {})
+        strategy_id = data.get('strategy')
+        
+        # Override parameters
+        cash = float(data.get('cash', 100000.0))
+        mult = float(data.get('mult', 10.0))
+        commission = float(data.get('commission', 15.0))
+        slippage = float(data.get('slippage', 2.0))
 
-        if not strategy_name:
-            return jsonify({"error": "Strategy name is required"}), 400
-
-        from strategies import get_strategy
-        strategy_class = get_strategy(strategy_name)
-
-        if not strategy_class:
-            return jsonify({"error": f"Strategy '{strategy_name}' not found."}), 404
+        if not strategy_id:
+            return jsonify({"error": "Strategy ID is required"}), 400
 
         try:
-            from backtest import run_backtest_for_api
-            result = run_backtest_for_api(
-                strategy_class=strategy_class,
-                product_code=product_code,
-                timeframe=timeframe,
-                start_date=start_date,
-                end_date=end_date,
-                **strategy_params
+            # Map frontend strategy dropdown IDs to actual engine modules
+            # matching: 'combined_ma_breakout', 'morning_breakout_short', 'ma_swing'
+            if strategy_id == "combined_ma_breakout":
+                from engine.strategies.combined_ma_breakout_strategy import run_strategy_api
+            elif strategy_id == "morning_breakout_short":
+                from engine.strategies.morning_breakout_short_strategy import run_strategy_api
+            elif strategy_id == "ma_swing":
+                from engine.strategies.ma_swing_strategy import run_strategy_api
+            else:
+                return jsonify({"error": f"Strategy '{strategy_id}' not mapped in backend."}), 404
+
+            # Execute the synchronous strategy build and get the JSON dictionary
+            result_dict = run_strategy_api(
+                init_cash=cash, 
+                mtx_mult=mult, 
+                mtx_comm=commission, 
+                slippage=slippage
             )
             
-            if "error" in result:
-                return jsonify(result), 400
+            if "error" in result_dict:
+                return jsonify(result_dict), 400
                 
-            return jsonify(result), 200
+            return jsonify(result_dict), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route('/api/ohlcv/build', methods=['POST'])
+    def api_build_ohlcv():
+        """
+        Trigger OHLCV building for a specific date and product.
+        Accepts: {"date": "YYYY-MM-DD", "product_code": "TX"}
+        """
+        data = request.json
+        target_date = data.get('date')
+        product_code = data.get('product_code', 'TX')
+
+        if not target_date:
+            return jsonify({"error": "Date is required"}), 400
+
+        try:
+            from ohlcv_builder import build_ohlcv_for_date
+            rows_inserted = build_ohlcv_for_date(app, product_code, target_date)
+            return jsonify({
+                "message": f"Successfully built OHLCV for {product_code} on {target_date}",
+                "rows_inserted": rows_inserted
+            }), 200
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 

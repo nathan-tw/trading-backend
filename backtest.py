@@ -1,5 +1,6 @@
 import os
 import sys
+import os
 import argparse
 import pandas as pd
 from datetime import datetime
@@ -11,79 +12,50 @@ import backtrader.analyzers as btanalyzers
 # if you want a clean API response, though Flask masks stdout normally.
 
 # Setup the database connection
-# This usually aligns with what is in your backend/app.py or docker-compose
 DATABASE_URL = os.environ.get(
     'DATABASE_URL', 
     'postgresql://admin:admin123@localhost:5432/taifex_db'
 )
 
-def fetch_tick_data(product_code, start_date=None, end_date=None):
+def fetch_ohlcv_data(product_code, timeframe, start_date=None, end_date=None):
     """
-    Fetch tick data from the PostgreSQL database, restricted to a specific product.
-    Returns a pandas DataFrame.
+    Fetch pre-calculated OHLCV data from the PostgreSQL database.
+    Returns a pandas DataFrame formatted for Backtrader.
     """
     engine = create_engine(DATABASE_URL)
     
     query = f"""
-        SELECT trade_date, trade_time, price, volume 
-        FROM tick_data 
-        WHERE product_code = '{product_code}'
+        SELECT timestamp as datetime, open, high, low, close, volume 
+        FROM ohlcv_data 
+        WHERE product_code = '{product_code}' AND timeframe = '{timeframe}'
     """
     
     if start_date:
-        query += f" AND trade_date >= '{start_date}'"
+        query += f" AND DATE(timestamp) >= '{start_date}'"
     if end_date:
-        query += f" AND trade_date <= '{end_date}'"
+        query += f" AND DATE(timestamp) <= '{end_date}'"
         
-    query += " ORDER BY trade_date, trade_time"
+    query += " ORDER BY timestamp"
     
-    print(f"Fetching data for '{product_code}'...")
+    print(f"Fetching {timeframe} OHLCV data for '{product_code}'...")
     df = pd.read_sql(query, engine)
     
     if df.empty:
-        print("No data found.")
+        print("No OHLCV data found. You may need to run the OHLCV builder first.")
         return df
 
-    # Convert trade_date and trade_time to a single datetime column
-    # trade_date is YYYY-MM-DD
-    # trade_time is HHMMSS
-    df['datetime_str'] = df['trade_date'].astype(str) + ' ' + df['trade_time']
-    df['datetime'] = pd.to_datetime(df['datetime_str'], format='%Y-%m-%d %H%M%S')
-    
+    # Convert datetime column and set as index
+    df['datetime'] = pd.to_datetime(df['datetime'])
     df.set_index('datetime', inplace=True)
-    df.drop(columns=['trade_date', 'trade_time', 'datetime_str'], inplace=True)
     
-    # Cast numerical columns just in case
-    df['price'] = df['price'].astype(float)
+    # Ensure correct data types for Backtrader
+    df['open'] = df['open'].astype(float)
+    df['high'] = df['high'].astype(float)
+    df['low'] = df['low'].astype(float)
+    df['close'] = df['close'].astype(float)
     df['volume'] = df['volume'].astype(int)
     
     return df
-
-def resample_to_ohlcv(df, timeframe='1min'):
-    """
-    Resample tick data (price, volume) into an OHLCV dataframe.
-    Valid timeframes: '1min', '5min', '1H', '1D', etc.
-    """
-    if df.empty:
-        return pd.DataFrame()
-
-    print(f"Resampling tick data to {timeframe} OHLCV...")
-    # Resample logic
-    ohlc_dict = {
-        'price': 'ohlc',
-        'volume': 'sum'
-    }
-    
-    # Resample using the datetime index
-    ohlcv = df.resample(timeframe).apply(ohlc_dict)
-    
-    # Flatten multi-level columns from 'ohlc'
-    ohlcv.columns = ['open', 'high', 'low', 'close', 'volume']
-    
-    # Drop rows without trades in the time period
-    ohlcv.dropna(inplace=True)
-    
-    return ohlcv
 
 # -----------------------------------------------------------------------------
 # Main Execution / API Engine
@@ -100,17 +72,12 @@ def run_backtest_for_api(strategy_class, product_code, timeframe='1min', start_d
     :param kwargs: Additional parameters to pass to the strategy.
     :return: dict containing backtest results.
     """
-    # 1. Fetch Tick Data
-    tick_df = fetch_tick_data(product_code, start_date, end_date)
-    
-    if tick_df.empty:
-        return {"error": f"No data available for product '{product_code}' in the given date range."}
-        
-    # 2. Resample to OHLCV
-    ohlcv_df = resample_to_ohlcv(tick_df, timeframe=timeframe)
+    # 1. Fetch OHLCV Data directly from DB
+    ohlcv_df = fetch_ohlcv_data(product_code, timeframe, start_date, end_date)
     
     if ohlcv_df.empty:
-        return {"error": "Dataframe is empty after resampling. Try a different timeframe or date range."}
+        return {"error": f"No OHLCV {timeframe} data available for product '{product_code}' in the given date range. You might need to run the builder."}
+
 
     # 3. Setup Backtrader
     cerebro = bt.Cerebro()

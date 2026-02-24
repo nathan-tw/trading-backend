@@ -5,19 +5,7 @@ from flask import Flask, jsonify, request
 from flask_migrate import Migrate
 from flask_cors import CORS
 from sqlalchemy import text
-from functools import wraps
 from models import db, DailySnapshot, Instrument, PortfolioHolding
-
-def require_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        # Only check for X-API-KEY
-        api_key = os.environ.get('API_KEY')
-        if request.headers.get('X-API-KEY') == api_key:
-            return f(*args, **kwargs)
-                
-        return jsonify({"error": "Unauthorized"}), 401
-    return decorated
 
 def create_app():
     app = Flask(__name__)
@@ -47,7 +35,6 @@ def create_app():
         })
 
     @app.route('/api/admin/update-assets', methods=['POST'])
-    @require_auth
     def update_assets():
         """
         Admin route to update or add assets.
@@ -105,7 +92,6 @@ def create_app():
             return jsonify({"error": str(e)}), 500
 
     @app.route('/api/portfolio/trade', methods=['POST'])
-    @require_auth
     def execute_trade():
         """
         執行交易並更新持倉
@@ -209,7 +195,6 @@ def create_app():
             return jsonify({"error": str(e)}), 500 
 
     @app.route('/api/snapshots/check', methods=['GET'])
-    @require_auth
     def check_snapshot():
         snapshot_date = request.args.get('date')
         if not snapshot_date:
@@ -219,7 +204,6 @@ def create_app():
         return jsonify({"exists": snapshot is not None})
 
     @app.route('/api/snapshots', methods=['POST'])
-    @require_auth
     def create_snapshot():
         data = request.json
         try:
@@ -248,7 +232,6 @@ def create_app():
             return jsonify({"error": str(e)}), 500
 
     @app.route('/api/ticks/check', methods=['GET'])
-    @require_auth
     def check_tick_data():
         """
         Check if tick data exists for a given date.
@@ -262,7 +245,6 @@ def create_app():
         return jsonify({"exists": exists})
 
     @app.route('/api/ticks/upload', methods=['POST'])
-    @require_auth
     def upload_tick_data():
         """
         Bulk upload tick data.
@@ -283,7 +265,6 @@ def create_app():
             return jsonify({"error": str(e)}), 500
 
     @app.route('/api/transactions', methods=['GET'])
-    @require_auth
     def get_transactions():
         """
         Returns all transaction records.
@@ -309,7 +290,6 @@ def create_app():
         return jsonify(results)
 
     @app.route('/api/assets/overview', methods=['GET'])
-    @require_auth
     def get_assets_overview():
         """
         Returns current asset overview.
@@ -338,7 +318,6 @@ def create_app():
         return jsonify(data)
 
     @app.route('/api/assets/history', methods=['GET'])
-    @require_auth
     def get_assets_history():
         """
         Returns daily equity history from database.

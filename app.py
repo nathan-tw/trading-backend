@@ -349,6 +349,50 @@ def create_app():
         
         return jsonify(history)
         
+    @app.route('/api/backtest', methods=['POST'])
+    def run_backtest_api():
+        """
+        Run a backtest using a specified strategy.
+        Accepts: {"strategy": "SmaCross", "product_code": "TX", "timeframe": "1min", "start_date": "2023-01-01", "end_date": "2023-12-31", "params": {...}}
+        """
+        data = request.json
+        if not data:
+            return jsonify({"error": "No JSON payload provided"}), 400
+
+        strategy_name = data.get('strategy')
+        product_code = data.get('product_code', 'TX')
+        timeframe = data.get('timeframe', '1min')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        strategy_params = data.get('params', {})
+
+        if not strategy_name:
+            return jsonify({"error": "Strategy name is required"}), 400
+
+        from strategies import get_strategy
+        strategy_class = get_strategy(strategy_name)
+
+        if not strategy_class:
+            return jsonify({"error": f"Strategy '{strategy_name}' not found."}), 404
+
+        try:
+            from backtest import run_backtest_for_api
+            result = run_backtest_for_api(
+                strategy_class=strategy_class,
+                product_code=product_code,
+                timeframe=timeframe,
+                start_date=start_date,
+                end_date=end_date,
+                **strategy_params
+            )
+            
+            if "error" in result:
+                return jsonify(result), 400
+                
+            return jsonify(result), 200
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     return app
 
 if __name__ == '__main__':

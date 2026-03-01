@@ -55,12 +55,22 @@ class TradeListAnalyzer(bt.Analyzer):
             
             is_closed = trade.isclosed
             
+            if is_closed:
+                if orig_size > 0:
+                    exit_price = trade.price + points
+                elif orig_size < 0:
+                    exit_price = trade.price - points
+                else:
+                    exit_price = trade.price
+            else:
+                exit_price = "-"
+            
             self.trades_dict[trade.ref] = {
                 "ref": trade.ref,
                 "entry_date": bt.num2date(trade.dtopen).isoformat() if trade.dtopen else "-",
                 "exit_date": bt.num2date(trade.dtclose).isoformat() if is_closed and trade.dtclose else "-",
                 "entry_price": trade.price,
-                "exit_price": trade.history[-1].status.price if is_closed and len(trade.history) > 0 else "-",
+                "exit_price": exit_price,
                 "size": orig_size,
                 "pnl": trade.pnl,
                 "pnlcomm": trade.pnlcomm,

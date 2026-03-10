@@ -13,7 +13,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # 定義佣金與手續費 (假設為台指期大台)
 class CommInfo_Futures(bt.CommInfoBase):
     params = (
-        ('commission', 53.0),  # 手續費 18 + 期交稅 35 = 53
+        ('commission', 3.0),  # 手續費 18 + 期交稅 35 = 53
         ('mult', 50.0),        # 每點 50 元 (小台，大台請改 200)
         ('margin', 0), 
         ('commtype', bt.CommInfoBase.COMM_FIXED),
@@ -91,7 +91,7 @@ def _calculate_sortino(returns_dict, risk_free_rate=0.0):
     
     downside_returns = returns[returns < risk_free_rate]
     if len(downside_returns) == 0:
-        return float('inf')
+        return 0.0
         
     downside_std = np.sqrt(np.mean(downside_returns**2))
     annual_downside_std = downside_std * np.sqrt(252)
@@ -101,7 +101,7 @@ def _calculate_sortino(returns_dict, risk_free_rate=0.0):
 
 
 
-def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, commission=53.0, mult=50.0, slippage=2.0, stake=1, plot_name='backtest_result.png', json_name=None, kwargs=None):
+def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, commission=53.0, mult=50.0, slippage=2.0, stake=1, plot_name='backtest_result.png', json_name=None, daily_data_index=0, kwargs=None):
     """
     執行 Backtrader 回測並產生詳細報告與圖表的公用框架。
     
@@ -196,7 +196,10 @@ def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, com
     if len(dates) > 1:
         total_days = (dates[-1] - dates[0]).days
         years = total_days / 365.25 if total_days > 0 else 0
-        cagr = ((end_cash / cash) ** (1 / years) - 1) * 100 if years > 0 else 0.0
+        if years > 0:
+            cagr = ((end_cash / cash) ** (1 / years) - 1) * 100 if end_cash > 0 else -100.0
+        else:
+            cagr = 0.0
     else:
         years = 0
         cagr = 0.0
@@ -208,16 +211,16 @@ def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, com
     
     largest_losing_trade = abs(ta.lost.pnl.max) if 'lost' in ta and 'pnl' in ta.lost else 0.0
     sortino = _calculate_sortino(daily_returns)
-    calmar = (cagr / mdd_pct) if mdd_pct > 0 else float('inf')
+    calmar = (cagr / mdd_pct) if mdd_pct > 0 else 0.0
     
     win_rate = (ta.won.total / total_trades * 100) if total_trades > 0 and 'won' in ta and 'total' in ta.won else 0.0
     avg_win = ta.won.pnl.average if 'won' in ta and 'pnl' in ta.won else 0.0
     avg_loss = abs(ta.lost.pnl.average) if 'lost' in ta and 'pnl' in ta.lost else 0.0
-    rr_ratio = (avg_win / avg_loss) if avg_loss > 0 else float('inf')
+    rr_ratio = (avg_win / avg_loss) if avg_loss > 0 else 0.0
     
     gross_profit = ta.won.pnl.total if 'won' in ta and 'pnl' in ta.won else 0.0
     gross_loss = abs(ta.lost.pnl.total) if 'lost' in ta and 'pnl' in ta.lost else 0.0
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float('inf')
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0.0
     
     expectancy = (win_rate/100 * avg_win) - ((1 - win_rate/100) * avg_loss)
     
@@ -346,9 +349,20 @@ def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, com
         l_data = len(strat0.data)
         values = strat0.observers.broker.value.get(size=l_data)
         
-        # Use l_data for dates extraction to avoid negative slicing bug
-        dates = [bt.num2date(dt) for dt in strat0.data.datetime.get(size=l_data)]
-        dates_iso = [dt.isoformat() for dt in dates]
+        # 1. Extract Equity values synchronized to the Primary Feed (data0)
+        l_primary = len(strat0.data)
+        values_raw = strat0.observers.broker.value.get(size=l_primary)
+        primary_dates = [bt.num2date(dt).isoformat() for dt in strat0.data.datetime.get(size=l_primary)]
+        
+        # Build strict lookup dictionary mapping Primary ISO Date -> Equity Value
+        equity_map = {}
+        for i in range(len(primary_dates)):
+            equity_map[primary_dates[i]] = values_raw[i]
+
+        # 2. Extract OHLCV synchronized to the UI Display Feed (data1 / daily)
+        daily_data_feed = strat0.datas[daily_data_index] if len(strat0.datas) > daily_data_index else strat0.data
+        l_daily = len(daily_data_feed)
+        daily_dates_iso = [bt.num2date(dt).isoformat() for dt in daily_data_feed.datetime.get(size=l_daily)]
         
         txns = strat0.analyzers.txns.get_analysis()
         formatted_txns = []
@@ -362,25 +376,41 @@ def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, com
                     "commission": round(txn[5], 2) if len(txn) > 5 else 0.0
                 })
         
-        # Extract OHLCV Data
-        d_open = strat0.data.open.get(size=l_data)
-        d_high = strat0.data.high.get(size=l_data)
-        d_low = strat0.data.low.get(size=l_data)
-        d_close = strat0.data.close.get(size=l_data)
-        d_vol = strat0.data.volume.get(size=l_data)
+        d_open = daily_data_feed.open.get(size=l_daily)
+        d_high = daily_data_feed.high.get(size=l_daily)
+        d_low = daily_data_feed.low.get(size=l_daily)
+        d_close = daily_data_feed.close.get(size=l_daily)
+        d_vol = daily_data_feed.volume.get(size=l_daily)
         
         ohlcv_data = []
-        min_len_data = min(len(dates_iso), len(d_open), len(d_high), len(d_low), len(d_close), len(d_vol), len(values))
-        for i in range(min_len_data):
-            idx = -min_len_data + i
-            ohlcv_data.append({
-                "time": dates_iso[idx],
-                "open": round(d_open[idx], 2),
-                "high": round(d_high[idx], 2),
-                "low": round(d_low[idx], 2),
-                "close": round(d_close[idx], 2),
-                "volume": int(d_vol[idx])
-            })
+        clean_values = []
+        clean_dates_iso = []
+        
+        seen_dates = set()
+        
+        # Track the last known equity value to fill in gaps if the daily date doesn't exactly match the 5m tick date
+        last_known_equity = cash
+        
+        for i in range(l_daily):
+            dt_str = daily_dates_iso[i]
+            if dt_str not in seen_dates:
+                seen_dates.add(dt_str)
+                clean_dates_iso.append(dt_str)
+                
+                # Fetch equity using Timestamp Dictionary matching
+                eq_val = equity_map.get(dt_str, last_known_equity)
+                last_known_equity = eq_val
+                
+                clean_values.append(round(eq_val, 2))
+                
+                ohlcv_data.append({
+                    "time": dt_str,
+                    "open": round(d_open[i], 2),
+                    "high": round(d_high[i], 2),
+                    "low": round(d_low[i], 2),
+                    "close": round(d_close[i], 2),
+                    "volume": int(d_vol[i])
+                })
         
         export_data = {
             "strategy": strategy_cls.__name__,
@@ -388,8 +418,8 @@ def run_strategy(strategy_cls, data_df=None, data_feeds=None, cash=250000.0, com
             "transactions": formatted_txns,
             "trades": trade_list_data,
             "equity_curve": {
-                "timestamps": dates_iso,
-                "values": [round(v, 2) for v in values]
+                "timestamps": clean_dates_iso,
+                "values": clean_values
             },
             "ohlcv": ohlcv_data
         }
